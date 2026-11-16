@@ -17,6 +17,8 @@ function nice(err){
   if (/valid email|invalid format|invalid email/i.test(m)) return 'That does not look like an email address.';
   if (/up to 8 learners/i.test(m)) return 'A family can have up to 8 learners.';
   if (/learner not found/i.test(m)) return 'That learner is no longer on this account. Reload the page.';
+  if (/not allowed/i.test(m)) return 'That page is for the site owner.';
+  if (/account not found/i.test(m)) return 'That account no longer exists.';
   if (/failed to fetch|network|load failed/i.test(m)) return OFFLINE;
   return m || 'Something went wrong. Try again.';
 }
@@ -95,6 +97,11 @@ MO.cloud = {
   /* linked device: read and save progress. error 'unlinked' means a parent removed the link. */
   devicePull: function(token){ return need() || rpc('device_pull', {p_token:token}); },
   devicePut: function(token, data){ return need() || rpc('device_put', {p_token:token, p_data:data}); },
-  deviceUnlink: function(token){ return need() || rpc('device_unlink', {p_token:token}); }
+  deviceUnlink: function(token){ return need() || rpc('device_unlink', {p_token:token}); },
+
+  /* ---- site owner: read-only view of every family. The database checks who is asking. ---- */
+  isAdmin: function(){ return need() || wrap(client.rpc('is_admin'), function(v){ return v === true; }); },
+  adminAccounts: function(){ return need() || wrap(client.rpc('admin_list_accounts')); },
+  adminAccount: function(id){ return need() || wrap(client.rpc('admin_account', {p_user:id})); }
 };
 })();

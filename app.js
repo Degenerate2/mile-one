@@ -180,13 +180,14 @@ function refreshFamily(){
     learners = r.data || [];
     if (learner) { var hit = learners.filter(function(l){ return l.id === learner.id; })[0]; if (hit) learner = hit; }
     if (!views.family.hidden) renderFamily();
-    if (!views.report.hidden) renderReport();
+    if (!views.report.hidden && reportMode === 'own') renderReport();
   });
 }
 function onAuth(ev, s2){
   if (ev === 'PASSWORD_RECOVERY') { session = s2; recovery = true; authMode = 'newpw'; go('welcome'); return; }
   if (ev === 'SIGNED_OUT') {
     session = null; learner = null; learners = []; lsSet('mileone.last', null);
+    isAdmin = false; adminAcct = null; $('#admin-link').hidden = true;
     guest = false; lsSet('mileone.guest', null);
     if (link) { useLink(null); pushNow(link.id); go('home'); return; }   /* back to the learner this phone belongs to */
     useProfile(null); updateWho(); go('welcome'); return;
@@ -195,7 +196,7 @@ function onAuth(ev, s2){
     var was = session && session.user ? session.user.id : null;
     session = s2;
     if (ev === 'SIGNED_IN') { guest = false; lsSet('mileone.guest', null); }
-    if (ev === 'SIGNED_IN' && was !== s2.user.id && !recovery) { learner = null; loadFamily(true).then(function(){ updateWho(); go(learner ? 'home' : 'family'); }); }
+    if (ev === 'SIGNED_IN' && was !== s2.user.id && !recovery) { learner = null; isAdmin = false; adminAcct = null; Promise.all([loadFamily(true), checkAdmin()]).then(function(){ updateWho(); go(learner ? 'home' : 'family'); }); }
   }
 }
 
@@ -313,12 +314,20 @@ function reportOf(d){
   R.missed.sort(function(a, b){ return b.n - a.n || a.m.n - b.m.n; });
   return R;
 }
-var reportId = null;
+var reportId = null, reportMode = 'own';
 function dataOf(l){ return l.id === store.id ? mem : l.data; }
 function renderReport(){
   var l = learners.filter(function(x){ return x.id === reportId; })[0];
   if (!l) return go('family');
-  var R = reportOf(dataOf(l)), name = l.name;
+  reportMode = 'own';
+  paintReport(l, dataOf(l), null);
+}
+/* admin is null for a parent's own learner, or {id, email} of the family an admin is reading */
+function paintReport(l, data, admin){
+  var R = reportOf(data), name = l.name;
+  $('#rp-back').href = admin ? '#admin/' + admin.id : '#family';
+  $('#rp-back').textContent = admin ? '\u2039 Account' : '\u2039 Family';
+  $('#rp-eyebrow').textContent = admin ? 'Admin · ' + admin.email : 'Progress report';
   $('#rp-title').textContent = name + '\'s progress';
   $('#rp-sum').textContent = !R.started && !R.fin.best
     ? name + ' has not started yet. Once they work through a lesson or take a quiz, it shows up here.'
@@ -386,10 +395,103 @@ function renderReport(){
   note.hidden = !R.old;
   note.textContent = 'Quizzes taken before this report was added show a best score only. Their try counts and missed questions start with the next attempt.';
   var acts = $('#rp-acts'); acts.textContent = '';
+  if (admin) {
+    var ab = h('a', 'btn ghost sm', 'Back to this account'); ab.href = '#admin/' + admin.id; acts.appendChild(ab);
+    return;
+  }
   var open = h('button', 'btn sm', 'Continue as ' + name); open.type = 'button';
   open.addEventListener('click', function(){ useLearner(l); go('home'); });
   var back = h('a', 'btn ghost sm', 'All learners'); back.href = '#family';
   acts.appendChild(open); acts.appendChild(back);
+}
+
+/* ---------- admin: the site owner reads any family's page. Nothing here can change it. ---------- */
+var isAdmin = false, adminAcct = null, adminRun = 0;
+function checkAdmin(){
+  if (!session || !cloud.enabled()) { isAdmin = false; return Promise.resolve(); }
+  return cloud.isAdmin().then(function(r){ isAdmin = !r.error && r.data === true; $('#admin-link').hidden = !isAdmin; });
+}
+function when(iso){
+  if (!iso) return 'never';
+  var t = typeof iso === 'number' ? iso : Date.parse(iso);
+  return isNaN(t) ? 'unknown' : ago(t).toLowerCase();
+}
+function adminHead(back, backText, title, sum){
+  $('#ad-back').href = back; $('#ad-back').textContent = '\u2039 ' + backText;
+  $('#ad-title').textContent = title; $('#ad-sum').textContent = sum;
+  msg($('#ad-msg'), '', 'bad');
+  $('#ad-stats').textContent = ''; $('#ad-list').textContent = ''; $('#ad-learners').textContent = '';
+}
+function renderAdminList(){
+  var my = ++adminRun;
+  adminHead('#family', 'Family', 'Accounts', 'Loading accounts...');
+  $('#ad-eyebrow').textContent = 'Admin';
+  cloud.adminAccounts().then(function(r){
+    if (my !== adminRun) return;
+    if (r.error) { $('#ad-sum').textContent = ''; return msg($('#ad-msg'), r.error, 'bad'); }
+    var d = r.data || {}, list = d.accounts || [], week = Date.now() - 7 * 86400000, active = 0;
+    list.forEach(function(a){ if (+a.last_active > week) active++; });
+    $('#ad-sum').textContent = 'Everyone who has signed up, newest first. Tap an account to see what that family sees. This view is read-only.' + (d.total > list.length ? ' Showing the newest ' + list.length + ' of ' + d.total + '.' : '');
+    [[d.total || 0, 'Accounts'], [d.learners || 0, 'Learners'], [active, 'Active in 7 days']].forEach(function(t){
+      var x = h('div', 'tile'); x.appendChild(h('b', null, String(t[0]))); x.appendChild(h('span', null, t[1])); $('#ad-stats').appendChild(x);
+    });
+    var box = $('#ad-list');
+    if (!list.length) box.appendChild(h('li', 'fine', 'No one has signed up yet.'));
+    list.forEach(function(a){
+      var li = h('li'), row = h('a', 'rp-row ' + (a.confirmed ? 'passed' : 'retry')), main = h('div', 'rp-main'), names = a.names || [];
+      row.href = '#admin/' + a.id;
+      main.appendChild(h('b', 'ad-email', a.email || '(no email)'));
+      main.appendChild(h('span', 'rp-meta', 'Signed up ' + when(a.created_at) + ' · last sign-in ' + when(a.last_sign_in_at)));
+      main.appendChild(h('span', 'rp-meta', (names.length ? names.length + (names.length === 1 ? ' learner: ' : ' learners: ') + names.join(', ') : 'No learners yet') +
+        (a.devices ? ' · ' + a.devices + (a.devices === 1 ? ' linked device' : ' linked devices') : '') + (a.last_active ? ' · last active ' + when(+a.last_active) : '')));
+      var n = h('span', 'rp-n', String(names.length)); n.setAttribute('aria-hidden', 'true');
+      row.appendChild(n); row.appendChild(main); row.appendChild(h('span', 'rp-pill', a.confirmed ? 'Email confirmed' : 'Email not confirmed'));
+      li.appendChild(row); box.appendChild(li);
+    });
+  });
+}
+function loadAdminAccount(id){
+  if (adminAcct && adminAcct.id === id && Date.now() - adminAcct.got < 15000) return Promise.resolve({data:adminAcct, error:null});
+  return cloud.adminAccount(id).then(function(r){
+    if (!r.error && r.data) { adminAcct = r.data; adminAcct.got = Date.now(); return {data:adminAcct, error:null}; }
+    return {data:null, error:r.error || 'That account no longer exists.'};
+  });
+}
+function renderAdminAccount(id){
+  var my = ++adminRun;
+  adminHead('#admin', 'Accounts', 'Account', 'Loading...');
+  $('#ad-eyebrow').textContent = 'Admin';
+  loadAdminAccount(id).then(function(r){
+    if (my !== adminRun) return;
+    if (r.error) { $('#ad-sum').textContent = ''; return msg($('#ad-msg'), r.error, 'bad'); }
+    var a = r.data, ls = a.learners || [];
+    $('#ad-title').textContent = a.email || 'Account';
+    $('#ad-sum').textContent = 'Signed up ' + when(a.created_at) + '. Last sign-in ' + when(a.last_sign_in_at) + '. Email ' + (a.confirmed ? 'confirmed' : 'not confirmed') + '. ' +
+      (ls.length ? 'These are the learners on this family\'s page. You can look, but nothing here changes their account.' : 'This family has not added a learner yet.');
+    var box = $('#ad-learners');
+    ls.forEach(function(l){
+      var st = statsOf(l.data), card = h('div', 'lcard');
+      var top = h('div', 'ltop'); top.appendChild(h('h3', null, l.name)); top.appendChild(h('span', 'state', st.xp + ' XP')); card.appendChild(top);
+      var grid = h('div', 'mgrid'); grid.setAttribute('role', 'img'); grid.setAttribute('aria-label', st.passed + ' of ' + MO.miles.length + ' miles passed');
+      st.cells.forEach(function(c){ grid.appendChild(h('i', c)); });
+      grid.appendChild(h('i', st.fin.passed ? 'passed fin' : st.fin.best ? 'started fin' : 'fin'));
+      card.appendChild(grid);
+      card.appendChild(h('p', 'fine', st.passed + ' of ' + MO.miles.length + ' miles passed. Final challenge best: ' + st.fin.best + ' of ' + FINAL_N + '.' + (st.at ? ' Last active: ' + ago(st.at).toLowerCase() + '.' : '')));
+      card.appendChild(h('p', 'fine', 'Added ' + when(l.created_at) + '. ' + (l.devices ? 'Linked on ' + l.devices + (l.devices === 1 ? ' device.' : ' devices.') : 'No phone linked.')));
+      var acts = h('div', 'acts'), view = h('a', 'btn sm', 'View progress'); view.href = '#admin/' + a.id + '/' + l.id;
+      acts.appendChild(view); card.appendChild(acts); box.appendChild(card);
+    });
+  });
+}
+function renderAdminReport(uid, lid){
+  var my = ++adminRun;
+  reportMode = 'admin';
+  loadAdminAccount(uid).then(function(r){
+    if (my !== adminRun) return;
+    var l = r.data && (r.data.learners || []).filter(function(x){ return x.id === lid; })[0];
+    if (!l) return go('admin/' + uid);
+    show('report'); paintReport(l, l.data, {id:r.data.id, email:r.data.email || 'account'});
+  });
 }
 
 /* ---------- Who's driving? ---------- */
@@ -411,6 +513,7 @@ function renderFamily(){
   $('#acct-email').textContent = session && session.user ? 'Signed in as ' + session.user.email : '';
   $('#fam-lede').textContent = learners.length ? 'Tap View progress to see what a learner has done and how well they are doing. Tap Continue to open the lessons as that learner.' : 'Add your first learner below to get started.';
   $('#add-form').hidden = learners.length >= 8;
+  $('#admin-link').hidden = !isAdmin;
   learners.forEach(function(l){
     var st = statsOf(l.id === store.id ? mem : l.data), card = h('div', 'lcard');
     var top = h('div', 'ltop'); top.appendChild(h('h3', null, l.name)); top.appendChild(h('span', 'state', st.xp + ' XP')); card.appendChild(top);
@@ -545,7 +648,7 @@ function restT(sc){ return sc.thumb != null ? sc.thumb : sc.freeze != null ? sc.
 /* ============================================================
    HOME
    ============================================================ */
-var views = {auth:$('#view-auth'), family:$('#view-family'), report:$('#view-report'), home:$('#view-home'), lesson:$('#view-lesson'), quiz:$('#view-quiz')};
+var views = {auth:$('#view-auth'), family:$('#view-family'), admin:$('#view-admin'), report:$('#view-report'), home:$('#view-home'), lesson:$('#view-lesson'), quiz:$('#view-quiz')};
 function renderNotices(){
   var device = store.id ? readLocal(PACK.storage) : null, claim = $('#claim');
   var offer = !!(device && hasProgress(device) && lsGet('mileone.claimskip.' + store.id) !== '1');
@@ -901,7 +1004,8 @@ function finalQuiz(){
 }
 
 /* ============================================================
-   ROUTING: #welcome, #family, #report-<learner id>, #home, #mile-6, #quiz-6, #final
+   ROUTING: #welcome, #family, #report-<learner id>, #home, #mile-6, #quiz-6, #final,
+   and for the site owner #admin, #admin/<account id>, #admin/<account id>/<learner id>
    ============================================================ */
 function show(v){ for (var k in views) views[k].hidden = k !== v; $('#boot').hidden = true; }
 function go(hash){ if (location.hash === '#' + hash) route(); else location.hash = hash; }
@@ -922,6 +1026,16 @@ function route(){
     show('auth'); renderAuth(); return;
   }
   if (!session && !guest && !link) return go('welcome');
+  if (hash === 'admin' || hash.indexOf('admin/') === 0) {
+    if (!session) return go(link || guest ? 'home' : 'welcome');
+    if (!isAdmin) return go('family');          /* a courtesy only: the database refuses non-admins whatever the page does */
+    var seg = hash.split('/');
+    $('#learners').textContent = '';
+    if (seg[1] && seg[2]) return renderAdminReport(seg[1], seg[2]);
+    show('admin');
+    if (seg[1]) renderAdminAccount(seg[1]); else renderAdminList();
+    return;
+  }
   if (hash.indexOf('report-') === 0) {
     if (!session) return go(link || guest ? 'home' : 'welcome');
     reportId = hash.slice(7);
@@ -959,7 +1073,7 @@ function boot(){
   cloud.init().then(function(s0){
     session = s0;
     cloud.onAuth(function(ev, s2){ setTimeout(function(){ onAuth(ev, s2); }, 0); });
-    return session ? loadFamily(true) : null;
+    return session ? Promise.all([loadFamily(true), checkAdmin()]) : null;
   }).then(function(){
     if (!session && link) {          /* a learner's own phone: open their saved copy now, then catch up with the account */
       useLink(null);

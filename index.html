@@ -199,6 +199,11 @@ input[type=email]:focus-visible,input[type=password]:focus-visible,input[type=te
 .notice.quiet p{color:var(--muted);font-size:14px}
 .notice .confirm{flex:1 1 100%}
 .notice.top{margin-top:16px}
+a.rp-row{color:inherit;text-decoration:none}
+a.rp-row:hover{border-color:var(--ink)}
+.ad-email{overflow-wrap:anywhere}
+#ad-title{overflow-wrap:anywhere}
+#view-admin .lcard .fine{margin:0}
 .stats.four{grid-template-columns:repeat(4,minmax(0,1fr));max-width:760px}
 .stats.four .tile b{font-size:22px}
 .rp-h{font-size:20px;font-weight:900;margin:26px 0 8px}
@@ -303,13 +308,25 @@ footer p{max-width:70ch}
       <div class="row"><input id="add-name" type="text" maxlength="24" placeholder="First name or nickname" autocomplete="off"><button class="btn" type="submit">Add</button></div>
       <p class="fine">A first name or nickname is all we keep about a learner.</p>
     </form>
-    <div class="acct"><span id="acct-email"></span><button class="btn ghost sm" id="signout" type="button">Sign out</button></div>
+    <div class="acct"><span id="acct-email"></span><button class="btn ghost sm" id="signout" type="button">Sign out</button><a class="btn ghost sm" id="admin-link" href="#admin" hidden>Admin</a></div>
+  </section>
+
+  <section id="view-admin" hidden>
+    <div class="lhead">
+      <a class="back" id="ad-back" href="#family">&lsaquo; Family</a>
+      <div class="ltitle"><p class="eyebrow" id="ad-eyebrow">Admin</p><h2 id="ad-title">Accounts</h2></div>
+    </div>
+    <p class="lede" id="ad-sum"></p>
+    <p class="fb bad" id="ad-msg" hidden></p>
+    <div class="stats" id="ad-stats"></div>
+    <ol class="rp-list" id="ad-list" style="margin-top:18px"></ol>
+    <div class="learners" id="ad-learners"></div>
   </section>
 
   <section id="view-report" hidden>
     <div class="lhead">
-      <a class="back" href="#family">&lsaquo; Family</a>
-      <div class="ltitle"><p class="eyebrow">Progress report</p><h2 id="rp-title"></h2></div>
+      <a class="back" id="rp-back" href="#family">&lsaquo; Family</a>
+      <div class="ltitle"><p class="eyebrow" id="rp-eyebrow">Progress report</p><h2 id="rp-title"></h2></div>
     </div>
     <p class="lede" id="rp-sum"></p>
     <div class="stats four" id="rp-stats"></div>

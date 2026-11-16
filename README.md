@@ -18,6 +18,14 @@ A static site with no build step. Netlify publishes this folder as-is.
 Accounts and progress live in a Supabase project (`mile-one`). Two tables, `learners` and `progress`,
 are protected by row-level security so a parent can only reach their own family's rows.
 
+## Site owner (admin)
+Accounts listed in the `admins` table see an Admin button on the family page. It opens a
+read-only list of every account and, for each one, the same learner cards and progress
+reports that family sees. The database functions `admin_list_accounts` and `admin_account`
+check `admins` on every call, so hiding the button is a courtesy, not the protection.
+`admins` cannot be read or changed through the API by anyone; add or remove an admin with
+SQL in the Supabase dashboard.
+
 ## Learner devices
 A learner does not get a login. The parent taps **Get code** on a learner's profile, which makes a
 one-time 8-character code (48 hours). The learner enters it once on their own phone, and the phone

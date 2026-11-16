@@ -1,4 +1,4 @@
-/* Mile One app: accounts, learner profiles, progress, the map, lessons, quizzes. */
+/* Mile One app: accounts, learner profiles, linked learner devices, progress, the map, lessons, quizzes. */
 (function(){
 'use strict';
 var MO = window.MO, s = MO.s, PACK = MO.PACK, cloud = MO.cloud;
@@ -53,15 +53,28 @@ var pushTimer = null, syncError = null;
 function writeLocal(){ lsSet(store.key, JSON.stringify(mem)); }
 function save(){ writeLocal(); if (store.id) schedulePush(1500); }
 function schedulePush(ms){ clearTimeout(pushTimer); var id = store.id; pushTimer = setTimeout(function(){ pushNow(id); }, ms); }
+/* a learner's own phone talks to the account through its link; a signed-in parent goes direct */
+function viaLink(id){ return !session && !!link && link.id === id; }
+function remotePull(id){
+  if (!viaLink(id)) return cloud.pull(id);
+  return cloud.devicePull(link.token).then(function(r){
+    if (r.error) return r;
+    if (link && r.data.name && r.data.name !== link.name) { link.name = r.data.name; setLink(link); if (learner) learner.name = link.name; updateWho(); }
+    return {data:r.data.data, error:null};
+  });
+}
+function remotePut(id, data){ return viaLink(id) ? cloud.devicePut(link.token, data) : cloud.put(id, data); }
 function pushNow(id){
   if (!id || !cloud.enabled()) return Promise.resolve();
   clearTimeout(pushTimer);
-  return cloud.pull(id).then(function(r){
+  return remotePull(id).then(function(r){
+    if (r.error === 'unlinked') return lostLink();
     if (r.error) { syncError = r.error; noteSync(); return; }
     var mine = store.id === id ? mem : (readLocal(PACK.storage + '.' + id) || blank());
     var merged = mergeMem(mine, r.data);
     if (store.id === id) { mem = merged; writeLocal(); addXp(0); }
-    return cloud.put(id, merged).then(function(p){
+    return remotePut(id, merged).then(function(p){
+      if (p.error === 'unlinked') return lostLink();
       syncError = p.error; noteSync();
       learners.forEach(function(l){ if (l.id === id && !p.error) l.data = merged; });
     });
@@ -94,18 +107,36 @@ function stars3(n){ return star(n >= 1) + star(n >= 2) + star(n >= 3); }
 function mileByN(n){ for (var i = 0; i < MO.miles.length; i++) if (MO.miles[i].n === n) return MO.miles[i]; return null; }
 
 /* ============================================================
-   ACCOUNT: one parent login, a profile for each learner
+   ACCOUNT: one parent login, a profile for each learner.
+   A learner's own phone is linked to their profile with a one-time
+   code from the parent, so it needs no login of its own.
+   Who is using this device: a signed-in parent, else a linked learner, else a guest.
    ============================================================ */
 var session = null, learner = null, learners = [], guest = lsGet('mileone.guest') === '1';
+var link = (function(){ try { var o = JSON.parse(lsGet('mileone.link')); return o && o.token && o.id ? o : null; } catch (e) { return null; } })();
+function setLink(o){ link = o; lsSet('mileone.link', o ? JSON.stringify(o) : null); }
+function useLink(data){
+  learner = {id:link.id, name:link.name, data:data || null};
+  guest = false; lsSet('mileone.guest', null);
+  useProfile(learner); updateWho();
+}
+function lostLink(){
+  if (session || !link) return;
+  setLink(null); learner = null; syncError = null; useProfile(null); updateWho();
+  authFlash = ['This device is no longer linked to a profile. Ask a parent for a new code.', 'bad'];
+  authMode = 'join'; go('welcome');
+}
+function fmtCode(v){ v = String(v || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 8); return v.length > 4 ? v.slice(0, 4) + '-' + v.slice(4) : v; }
 var booted = false, recovery = false, authMode = 'in', authFlash = null, famError = null;
 
 function msg(el, text, kind){ el.hidden = !text; el.className = 'fb ' + (kind || 'bad'); el.textContent = text || ''; }
 function updateWho(){
   var el = $('#who');
   if (session && learner) { el.hidden = false; el.textContent = learner.name; el.href = '#family'; el.title = 'Switch learner'; }
+  else if (!session && link && learner) { el.hidden = false; el.textContent = learner.name; el.href = '#home'; el.title = 'This device is linked to ' + learner.name + '\'s profile'; }
   else if (!session && guest) { el.hidden = false; el.textContent = 'Guest'; el.href = '#welcome'; el.title = 'Create an account or sign in'; }
   else el.hidden = true;
-  $('#xp').hidden = !!(session && !learner) || (!session && !guest);
+  $('#xp').hidden = !!(session && !learner) || (!session && !guest && !link);
 }
 function useLearner(l){
   learner = l; lsSet('mileone.last', l ? l.id : null);
@@ -120,11 +151,26 @@ function loadFamily(auto){
     }
   });
 }
+/* The parent's page shows work done on other devices, so fetch it fresh when the page opens.
+   A fetched copy is dropped if the parent changed something or has a form open in the meantime. */
+var famBusy = 0, famVer = 0;
+function famDo(promise){ famBusy++; return promise.then(function(r){ famBusy--; famVer++; return r; }); }
+function refreshFamily(){
+  if (!session || !cloud.enabled() || famBusy) return;
+  var v = famVer;
+  cloud.listLearners().then(function(r){
+    if (r.error || !session || famBusy || v !== famVer || document.querySelector('#learners .confirm')) return;
+    learners = r.data || [];
+    if (learner) { var hit = learners.filter(function(l){ return l.id === learner.id; })[0]; if (hit) learner = hit; }
+    if (!views.family.hidden) renderFamily();
+  });
+}
 function onAuth(ev, s2){
   if (ev === 'PASSWORD_RECOVERY') { session = s2; recovery = true; authMode = 'newpw'; go('welcome'); return; }
   if (ev === 'SIGNED_OUT') {
     session = null; learner = null; learners = []; lsSet('mileone.last', null);
     guest = false; lsSet('mileone.guest', null);
+    if (link) { useLink(null); pushNow(link.id); go('home'); return; }   /* back to the learner this phone belongs to */
     useProfile(null); updateWho(); go('welcome'); return;
   }
   if (s2 && (ev === 'SIGNED_IN' || ev === 'TOKEN_REFRESHED' || ev === 'USER_UPDATED')) {
@@ -140,23 +186,26 @@ var AUTH = {
   'in':   {title:'Sign in', go:'Sign in', note:'', pw:true, email:true},
   up:     {title:'Create a family account', go:'Create account', note:'Use a parent\'s email. You will add each learner on the next screen.', pw:true, email:true},
   forgot: {title:'Reset your password', go:'Email me a reset link', note:'Enter the email on the account and we will send a link to set a new password.', pw:false, email:true},
-  newpw:  {title:'Choose a new password', go:'Save new password', note:'Type the new password for your family account.', pw:true, email:false}
+  newpw:  {title:'Choose a new password', go:'Save new password', note:'Type the new password for your family account.', pw:true, email:false},
+  join:   {title:'Enter your learner code', go:'Link this device', note:'Ask a parent to sign in to the family account, tap Get code on your profile, and read you the code.', pw:false, email:false, code:true}
 };
 function renderAuth(){
   var a = AUTH[authMode];
   $('#tab-in').className = 'seg' + (authMode === 'in' ? ' on' : '');
   $('#tab-up').className = 'seg' + (authMode === 'up' ? ' on' : '');
-  $('#auth-tabs').hidden = authMode === 'newpw';
+  $('#auth-tabs').hidden = authMode === 'newpw' || authMode === 'join';
   $('#auth-title').textContent = a.title;
   $('#auth-note').textContent = a.note; $('#auth-note').hidden = !a.note;
-  $('#auth-email-row').hidden = !a.email; $('#auth-pw-row').hidden = !a.pw;
+  $('#auth-email-row').hidden = !a.email; $('#auth-pw-row').hidden = !a.pw; $('#auth-code-row').hidden = !a.code;
   $('#auth-pw').autocomplete = authMode === 'in' ? 'current-password' : 'new-password';
   $('#auth-pw-label').textContent = authMode === 'newpw' ? 'New password' : authMode === 'up' ? 'Choose a password (8 or more characters)' : 'Password';
   $('#auth-go').textContent = a.go; $('#auth-go').disabled = false;
   $('#auth-forgot').hidden = authMode !== 'in';
-  $('#auth-back').hidden = authMode !== 'forgot';
+  $('#auth-back').hidden = authMode !== 'forgot' && authMode !== 'join';
+  $('#auth-join-row').hidden = authMode === 'newpw' || authMode === 'join' || !!session;
   $('#auth-guest-row').hidden = authMode === 'newpw' || !!session;
-  $('#auth-guest').textContent = guest ? 'Keep going as a guest' : 'Try it without an account';
+  $('#auth-guest').textContent = link ? 'Back to ' + link.name + '\'s lessons' : guest ? 'Keep going as a guest' : 'Try it without an account';
+  $('#auth-guest-fine').hidden = !!link;
   msg($('#auth-msg'), authFlash ? authFlash[0] : '', authFlash ? authFlash[1] : 'bad');
   authFlash = null;
 }
@@ -165,15 +214,34 @@ $('#tab-in').addEventListener('click', function(){ setAuthMode('in'); });
 $('#tab-up').addEventListener('click', function(){ setAuthMode('up'); });
 $('#auth-forgot').addEventListener('click', function(){ setAuthMode('forgot'); });
 $('#auth-back').addEventListener('click', function(){ setAuthMode('in'); });
-$('#auth-guest').addEventListener('click', function(){ guest = true; lsSet('mileone.guest', '1'); useProfile(null); updateWho(); go('home'); });
+$('#auth-join').addEventListener('click', function(){ setAuthMode('join'); $('#auth-code').focus(); });
+$('#auth-code').addEventListener('input', function(){ var f = fmtCode(this.value); if (this.value !== f) this.value = f; });
+$('#auth-guest').addEventListener('click', function(){
+  if (link) return go('home');
+  guest = true; lsSet('mileone.guest', '1'); useProfile(null); updateWho(); go('home');
+});
 $('#auth-form').addEventListener('submit', function(e){
   e.preventDefault();
   var email = $('#auth-email').value.trim(), pw = $('#auth-pw').value, box = $('#auth-msg'), btn = $('#auth-go'), a = AUTH[authMode];
   if (a.email && !/^\S+@\S+\.\S+$/.test(email)) return msg(box, 'Enter the parent\'s email address.');
   if (a.pw && authMode !== 'in' && pw.length < 8) return msg(box, 'Use a password with at least 8 characters.');
   if (a.pw && !pw) return msg(box, 'Enter your password.');
+  var code = $('#auth-code').value.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+  if (a.code && code.length !== 8) return msg(box, 'Type the 8-character code a parent gave you.');
   if (!cloud.enabled()) return msg(box, 'Accounts are not available right now. You can still use the course as a guest.');
   btn.disabled = true; msg(box, 'One moment...', 'good');
+  if (authMode === 'join') {
+    var old = link;
+    cloud.redeemCode(code).then(function(r){
+      btn.disabled = false;
+      if (r.error) return msg(box, r.error);
+      if (old && old.token !== r.data.token) cloud.deviceUnlink(old.token);
+      setLink({token:r.data.token, id:r.data.learner_id, name:r.data.name});
+      $('#auth-code').value = ''; authMode = 'in';
+      useLink(r.data.data); go('home');
+    });
+    return;
+  }
   function done(r, okText){
     btn.disabled = false;
     if (r.error) return msg(box, r.error);
@@ -223,10 +291,59 @@ function renderFamily(){
     var acts = h('div', 'acts');
     var open = h('button', 'btn sm', 'Continue as ' + l.name); open.type = 'button';
     open.addEventListener('click', function(){ useLearner(l); go('home'); });
+    var getc = h('button', 'linkbtn', 'Get code'); getc.type = 'button'; getc.title = 'Link ' + l.name + '\'s own phone';
     var ren = h('button', 'linkbtn', 'Rename'); ren.type = 'button';
     var rem = h('button', 'linkbtn', 'Remove'); rem.type = 'button';
-    acts.appendChild(open); acts.appendChild(ren); acts.appendChild(rem); card.appendChild(acts);
+    acts.appendChild(open); acts.appendChild(getc); acts.appendChild(ren); acts.appendChild(rem); card.appendChild(acts);
+    var dev = h('p', 'fine devline');
+    if (l.devices) {
+      dev.appendChild(document.createTextNode('Linked on ' + l.devices + (l.devices === 1 ? ' device. ' : ' devices. ')));
+      var unl = h('button', 'linkbtn', l.devices === 1 ? 'Unlink it' : 'Unlink them'); unl.type = 'button'; unl.style.fontSize = '13px';
+      dev.appendChild(unl);
+      unl.addEventListener('click', function(){
+        slot.textContent = '';
+        var c = h('div', 'confirm'), ok = h('button', 'btn sm danger', 'Unlink'), no = h('button', 'btn ghost sm', 'Cancel');
+        ok.type = 'button'; no.type = 'button';
+        c.appendChild(h('p', null, 'Unlink ' + (l.devices === 1 ? 'the device' : 'all ' + l.devices + ' devices') + ' from ' + l.name + '\'s profile? Saved progress stays. To get back in, ' + l.name + ' will need a new code.'));
+        var row = h('div', 'acts'); row.appendChild(ok); row.appendChild(no); c.appendChild(row); slot.appendChild(c);
+        no.addEventListener('click', function(){ slot.textContent = ''; });
+        ok.addEventListener('click', function(){
+          ok.disabled = true;
+          famDo(cloud.unlinkDevices(l.id)).then(function(r){ if (r.error) famError = r.error; else { famError = null; l.devices = 0; } renderFamily(); });
+        });
+      });
+    } else dev.textContent = 'No phone linked yet. Tap Get code to link ' + l.name + '\'s own phone.';
+    card.appendChild(dev);
     var slot = h('div'); card.appendChild(slot);
+    getc.addEventListener('click', function(){
+      slot.textContent = ''; getc.disabled = true;
+      famDo(cloud.createCode(l.id)).then(function(r){
+        getc.disabled = false;
+        if (r.error) { famError = r.error; return renderFamily(); }
+        var code = fmtCode(r.data.code), until = '';
+        try { until = new Date(r.data.expires_at).toLocaleString([], {weekday:'long', hour:'numeric', minute:'2-digit'}); } catch (e) {}
+        var c = h('div', 'confirm codebox');
+        c.appendChild(h('p', 'fine', 'One-time code for ' + l.name));
+        var big = h('p', 'code', code); big.setAttribute('aria-label', 'Code: ' + code.replace('-', '').split('').join(' '));
+        c.appendChild(big);
+        c.appendChild(h('p', null, 'On ' + l.name + '\'s phone, open ' + location.host + ', tap "I have a learner code" and type this in. After that the phone opens straight to ' + l.name + '\'s lessons.'));
+        c.appendChild(h('p', 'fine', 'Works once. Good for 48 hours' + (until ? ' (until ' + until + ')' : '') + '. Getting another code cancels this one.'));
+        var text = PACK.brand + ' code for ' + l.name + ': ' + code + '. Open ' + location.origin + location.pathname + '#join-' + code.replace('-', '') + ' on your phone to link it. Works once, good for 48 hours.';
+        var canShare = !!navigator.share, send = h('button', 'btn sm', canShare ? 'Send it' : 'Copy a message'), done = h('button', 'btn ghost sm', 'Done');
+        send.type = 'button'; done.type = 'button';
+        var row = h('div', 'acts'); row.appendChild(send); row.appendChild(done); c.appendChild(row); slot.appendChild(c);
+        done.addEventListener('click', function(){ slot.textContent = ''; refreshFamily(); });
+        send.addEventListener('click', function(){
+          function copied(){ send.textContent = 'Copied'; setTimeout(function(){ send.textContent = canShare ? 'Send it' : 'Copy a message'; }, 2000); }
+          function copy(){
+            try { navigator.clipboard.writeText(text).then(copied, function(){ send.textContent = 'Could not copy'; }); }
+            catch (e) { send.textContent = 'Could not copy'; }
+          }
+          if (canShare) navigator.share({text:text}).catch(function(e){ if (!e || e.name !== 'AbortError') copy(); });
+          else copy();
+        });
+      });
+    });
     ren.addEventListener('click', function(){
       slot.textContent = '';
       var f = h('form', 'confirm plain'), inp = h('input'), ok = h('button', 'btn sm', 'Save'), no = h('button', 'btn ghost sm', 'Cancel');
@@ -239,7 +356,7 @@ function renderFamily(){
         e.preventDefault();
         var name = inp.value.trim();
         if (!name) return;
-        cloud.renameLearner(l.id, name).then(function(r){ if (r.error) { famError = r.error; } else { l.name = name; famError = null; if (learner && learner.id === l.id) updateWho(); } renderFamily(); });
+        famDo(cloud.renameLearner(l.id, name)).then(function(r){ if (r.error) { famError = r.error; } else { l.name = name; famError = null; if (learner && learner.id === l.id) updateWho(); } renderFamily(); });
       });
     });
     rem.addEventListener('click', function(){
@@ -251,7 +368,7 @@ function renderFamily(){
       no.addEventListener('click', function(){ slot.textContent = ''; });
       ok.addEventListener('click', function(){
         ok.disabled = true;
-        cloud.removeLearner(l.id).then(function(r){
+        famDo(cloud.removeLearner(l.id)).then(function(r){
           if (r.error) famError = r.error;
           else {
             famError = null; learners = learners.filter(function(x){ return x.id !== l.id; });
@@ -269,7 +386,7 @@ $('#add-form').addEventListener('submit', function(e){
   e.preventDefault();
   var inp = $('#add-name'), name = inp.value.trim();
   if (!name) return msg($('#fam-msg'), 'Type a first name or nickname for the learner.');
-  cloud.addLearner(name).then(function(r){
+  famDo(cloud.addLearner(name)).then(function(r){
     if (r.error) famError = r.error; else { famError = null; learners.push(r.data); inp.value = ''; }
     renderFamily();
   });
@@ -299,10 +416,31 @@ function renderNotices(){
   var device = store.id ? readLocal(PACK.storage) : null, claim = $('#claim');
   var offer = !!(device && hasProgress(device) && lsGet('mileone.claimskip.' + store.id) !== '1');
   claim.hidden = !offer;
-  if (offer) $('#claim-text').textContent = 'This device has progress saved from before you signed in (' + device.xp + ' XP). Add it to ' + learner.name + '\'s profile?';
-  $('#guestnote').hidden = !!session || !guest;
+  if (offer) $('#claim-text').textContent = 'This device has progress saved from before ' + (session ? 'you signed in' : 'it was linked') + ' (' + device.xp + ' XP). Add it to ' + learner.name + '\'s profile?';
+  $('#guestnote').hidden = !!session || !guest || !!link;
+  var ln = !session && !!link;
+  $('#linknote').hidden = !ln; $('#link-slot').hidden = true; $('#link-slot').textContent = '';
+  if (ln) $('#link-text').textContent = 'This device is linked to ' + link.name + '\'s profile. Progress saves to the family account.';
   noteSync();
 }
+$('#link-off').addEventListener('click', function(){
+  if (!link) return;
+  var slot = $('#link-slot'), c = h('div', 'confirm'), ok = h('button', 'btn sm danger', 'Unlink'), no = h('button', 'btn ghost sm', 'Cancel');
+  ok.type = 'button'; no.type = 'button';
+  slot.textContent = ''; slot.hidden = false;
+  c.appendChild(h('p', null, 'Unlink this device from ' + link.name + '\'s profile? Saved progress stays in the family account. To link again you will need a new code from a parent.'));
+  var row = h('div', 'acts'); row.appendChild(ok); row.appendChild(no); c.appendChild(row); slot.appendChild(c);
+  no.addEventListener('click', function(){ slot.hidden = true; slot.textContent = ''; });
+  ok.addEventListener('click', function(){
+    ok.disabled = true;
+    var old = link;
+    pushNow(old.id).then(function(){
+      if (link !== old) return;                    /* already cut off from the parent's side */
+      cloud.deviceUnlink(old.token);
+      setLink(null); learner = null; syncError = null; useProfile(null); updateWho(); go('welcome');
+    });
+  });
+});
 $('#claim-yes').addEventListener('click', function(){
   var device = readLocal(PACK.storage);
   if (device && store.id) { mem = mergeMem(mem, device); lsSet(PACK.storage, null); lsSet(PACK.legacy, null); save(); addXp(0); }
@@ -626,16 +764,21 @@ function route(){
   if (stage) { stage.cancel(); stage = null; }
   window.scrollTo(0, 0);
   if (recovery) { show('auth'); authMode = 'newpw'; renderAuth(); return; }
+  if (hash === 'join' || hash.indexOf('join-') === 0) {        /* a link a parent sent, with the code filled in */
+    if (!session) { authMode = 'join'; $('#auth-code').value = fmtCode(hash.slice(5)); }
+    try { history.replaceState(null, '', location.pathname + '#welcome'); } catch (e) {}
+    hash = 'welcome';
+  }
   if (hash === 'welcome') {
     if (session) return go(learner ? 'home' : 'family');
     show('auth'); renderAuth(); return;
   }
-  if (!session && !guest) return go('welcome');
+  if (!session && !guest && !link) return go('welcome');
   if (session && (hash === 'family' || !learner)) {
     if (hash !== 'family') return go('family');
-    show('family'); renderFamily(); return;
+    show('family'); renderFamily(); refreshFamily(); return;
   }
-  if (hash === 'family') return go('welcome');
+  if (hash === 'family') return go(link ? 'home' : 'welcome');
   if (hash.indexOf('mile-') === 0 && (m = mileByN(+hash.slice(5)))) { show('lesson'); openLesson(m); }
   else if (hash.indexOf('quiz-') === 0 && (m = mileByN(+hash.slice(5)))) { show('quiz'); mileQuiz(m); }
   else if (hash === 'final') { show('quiz'); finalQuiz(); }
@@ -643,8 +786,10 @@ function route(){
 }
 window.addEventListener('hashchange', route);
 document.addEventListener('visibilitychange', function(){
+  var back = document.visibilityState !== 'hidden';
+  if (back && session && !views.family.hidden) refreshFamily();
   if (!store.id) return;
-  if (document.visibilityState === 'hidden') pushNow(store.id);        /* save before the tab goes away */
+  if (!back) pushNow(store.id);        /* save before the tab goes away */
   else pushNow(store.id).then(function(){ if (!views.home.hidden) renderHome(); });   /* pick up progress from another device */
 });
 window.addEventListener('online', function(){ if (store.id) pushNow(store.id); });
@@ -662,6 +807,10 @@ function boot(){
     cloud.onAuth(function(ev, s2){ setTimeout(function(){ onAuth(ev, s2); }, 0); });
     return session ? loadFamily(true) : null;
   }).then(function(){
+    if (!session && link) {          /* a learner's own phone: open their saved copy now, then catch up with the account */
+      useLink(null);
+      pushNow(link.id).then(function(){ if (link && !views.home.hidden) renderHome(); });
+    }
     booted = true; updateWho();
     if ((location.hash || '').indexOf('access_token=') >= 0) { try { history.replaceState(null, '', location.pathname); } catch (e) {} }
     route();

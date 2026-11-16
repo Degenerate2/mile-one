@@ -1,4 +1,4 @@
-/* Mile One cloud: family accounts and saved progress (Supabase).
+/* Mile One cloud: family accounts, learner join codes and saved progress (Supabase).
    Every function resolves to {data, error}. error is a plain sentence or null. Nothing here rejects. */
 (function(){
 'use strict';
@@ -16,6 +16,7 @@ function nice(err){
   if (/different from the old/i.test(m)) return 'Pick a password you have not used on this account before.';
   if (/valid email|invalid format|invalid email/i.test(m)) return 'That does not look like an email address.';
   if (/up to 8 learners/i.test(m)) return 'A family can have up to 8 learners.';
+  if (/learner not found/i.test(m)) return 'That learner is no longer on this account. Reload the page.';
   if (/failed to fetch|network|load failed/i.test(m)) return OFFLINE;
   return m || 'Something went wrong. Try again.';
 }
@@ -26,6 +27,18 @@ function wrap(promise, pick){
   }).catch(function(e){ return {data:null, error:nice(e) || OFFLINE}; });
 }
 function here(){ return location.origin + location.pathname; }
+/* these functions answer {error:'invalid'|'rate'|'unlinked'} in place of failing */
+var RPC_ERR = {
+  invalid: 'That code did not work. Check it with a parent. Codes last 48 hours and work once.',
+  rate: 'Too many tries. Wait 15 minutes, then ask a parent for a new code.',
+  unlinked: 'unlinked'
+};
+function rpc(name, args){
+  return wrap(client.rpc(name, args)).then(function(r){
+    if (!r.error && r.data && r.data.error) return {data:null, error:RPC_ERR[r.data.error] || 'Something went wrong. Try again.'};
+    return r;
+  });
+}
 function need(){ return client ? null : Promise.resolve({data:null, error:OFFLINE}); }
 
 MO.cloud = {
@@ -53,15 +66,15 @@ MO.cloud = {
   setPassword: function(password){ return need() || wrap(client.auth.updateUser({password:password})); },
 
   listLearners: function(){
-    return need() || wrap(client.from('learners').select('id,name,created_at,progress(data,updated_at)').order('created_at', {ascending:true}), function(rows){
+    return need() || wrap(client.from('learners').select('id,name,created_at,progress(data,updated_at),learner_devices(id)').order('created_at', {ascending:true}), function(rows){
       return (rows || []).map(function(r){
         var p = Array.isArray(r.progress) ? r.progress[0] : r.progress;
-        return {id:r.id, name:r.name, data:p ? p.data : null};
+        return {id:r.id, name:r.name, data:p ? p.data : null, devices:Array.isArray(r.learner_devices) ? r.learner_devices.length : 0};
       });
     });
   },
   addLearner: function(name){
-    return need() || wrap(client.from('learners').insert({name:name}).select('id,name').single(), function(r){ return {id:r.id, name:r.name, data:null}; });
+    return need() || wrap(client.from('learners').insert({name:name}).select('id,name').single(), function(r){ return {id:r.id, name:r.name, data:null, devices:0}; });
   },
   renameLearner: function(id, name){ return need() || wrap(client.from('learners').update({name:name}).eq('id', id)); },
   removeLearner: function(id){ return need() || wrap(client.from('learners').delete().eq('id', id)); },
@@ -70,6 +83,18 @@ MO.cloud = {
   },
   put: function(id, data){
     return need() || wrap(client.from('progress').upsert({learner_id:id, data:data, updated_at:new Date().toISOString()}));
-  }
+  },
+
+  /* ---- join codes: a learner's own phone, linked to their profile without a login ---- */
+  /* parent: a fresh one-time code for this learner -> {code, expires_at} */
+  createCode: function(id){ return need() || wrap(client.rpc('create_join_code', {p_learner:id})); },
+  /* parent: cut off every device linked to this learner */
+  unlinkDevices: function(id){ return need() || wrap(client.from('learner_devices').delete().eq('learner_id', id)); },
+  /* learner: trade a code for a link -> {token, learner_id, name, data} */
+  redeemCode: function(code){ return need() || rpc('redeem_join_code', {p_code:code}); },
+  /* linked device: read and save progress. error 'unlinked' means a parent removed the link. */
+  devicePull: function(token){ return need() || rpc('device_pull', {p_token:token}); },
+  devicePut: function(token, data){ return need() || rpc('device_put', {p_token:token, p_data:data}); },
+  deviceUnlink: function(token){ return need() || rpc('device_unlink', {p_token:token}); }
 };
 })();

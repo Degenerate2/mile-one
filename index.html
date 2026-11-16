@@ -190,6 +190,14 @@ input[type=email]:focus-visible,input[type=password]:focus-visible,input[type=te
 .confirm{background:var(--bad-bg);border-radius:10px;padding:10px;display:grid;gap:8px;font-size:15px}
 .confirm.plain{background:var(--paper)}
 .btn.danger{background:var(--stop);box-shadow:0 0 0 2px var(--stop)}
+.codebox{background:var(--paper);border:2px dashed var(--guide);justify-items:start}
+.code{font-family:var(--font-display);font-weight:900;font-size:34px;line-height:1.1;letter-spacing:.12em;font-variant-numeric:tabular-nums;color:var(--guide-deep);user-select:all;-webkit-user-select:all}
+#auth-code{font-family:var(--font-display);font-weight:900;font-size:24px;letter-spacing:.12em;text-transform:uppercase}
+#auth-code::placeholder{color:#B5BDB6;font-weight:800}
+.joinrow{display:grid;gap:4px;justify-items:start;width:100%;border-top:1px solid var(--line);padding-top:12px}
+.notice.quiet{background:var(--card);border:1px solid var(--line);margin-top:22px}
+.notice.quiet p{color:var(--muted);font-size:14px}
+.notice .confirm{flex:1 1 100%}
 
 footer{max-width:1040px;margin:0 auto;padding:0 16px 32px;color:var(--muted);font-size:13px}
 footer p{max-width:70ch}
@@ -222,7 +230,7 @@ footer p{max-width:70ch}
       <div class="intro">
         <p class="eyebrow">Arizona driver course</p>
         <h1>Learn the road by watching it</h1>
-        <p class="lede">Fourteen short picture lessons with quizzes. Make one family account, add a profile for each learner, and everyone's progress is saved and waiting on any phone or computer.</p>
+        <p class="lede">Fourteen short picture lessons with quizzes. Make one family account, add a profile for each learner, and link each learner's own phone with a one-time code. Everyone's progress is saved and waiting on any phone or computer.</p>
       </div>
       <div class="authcard">
         <div class="tabs" id="auth-tabs">
@@ -234,14 +242,19 @@ footer p{max-width:70ch}
           <p class="setup" id="auth-note" hidden></p>
           <div class="field" id="auth-email-row"><label for="auth-email">Parent's email</label><input id="auth-email" type="email" autocomplete="email" inputmode="email"></div>
           <div class="field" id="auth-pw-row"><label for="auth-pw" id="auth-pw-label">Password</label><input id="auth-pw" type="password" autocomplete="current-password"></div>
+          <div class="field" id="auth-code-row" hidden><label for="auth-code">Learner code</label><input id="auth-code" type="text" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false" maxlength="9" placeholder="ABCD-2345"></div>
           <p class="fb" id="auth-msg" hidden></p>
           <div class="actions"><button class="btn" id="auth-go" type="submit">Sign in</button></div>
         </form>
         <button class="linkbtn" id="auth-forgot" type="button">Forgot your password?</button>
         <button class="linkbtn" id="auth-back" type="button" hidden>Back to sign in</button>
+        <div class="joinrow" id="auth-join-row">
+          <button class="btn ghost" id="auth-join" type="button">I have a learner code</button>
+          <p class="fine">Learners: a parent gets your code from the family account. No email or password needed.</p>
+        </div>
         <div id="auth-guest-row">
           <button class="linkbtn" id="auth-guest" type="button">Try it without an account</button>
-          <p class="fine">Without an account, progress is saved on this device only.</p>
+          <p class="fine" id="auth-guest-fine">Without an account, progress is saved on this device only.</p>
         </div>
       </div>
     </div>
@@ -284,6 +297,11 @@ footer p{max-width:70ch}
       <div class="tile"><b id="st-final">0/25</b><span>Final best</span></div>
     </div>
     <ol class="map" id="map"></ol>
+    <div class="notice quiet" id="linknote" hidden>
+      <p id="link-text"></p>
+      <div class="acts"><button class="linkbtn" id="link-off" type="button">Unlink this device</button></div>
+      <div id="link-slot" hidden></div>
+    </div>
   </section>
 
   <section id="view-lesson" hidden>

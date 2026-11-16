@@ -13,20 +13,37 @@ function lsSet(k, v){ try { if (v == null) localStorage.removeItem(k); else loca
    PROGRESS: one record per learner. Kept on the device and, when
    signed in, merged with the copy in the family's account.
    ============================================================ */
+/* Per mile: steps done, best quiz score, passed. For the parent's report it also keeps
+   tries (quiz attempts), first (score on the first attempt), miss (how often each quiz
+   question was missed) and at (when the learner last worked on it). */
 function blank(){ return {xp:0, miles:{}, fin:{best:0, passed:false}}; }
 function norm(d){
   d = d && typeof d === 'object' ? d : {};
-  return {xp:+d.xp || 0, miles:d.miles && typeof d.miles === 'object' ? d.miles : {}, fin:{best:(d.fin && +d.fin.best) || 0, passed:!!(d.fin && d.fin.passed)}};
+  var f = d.fin && typeof d.fin === 'object' ? d.fin : {}, o = {xp:+d.xp || 0, miles:d.miles && typeof d.miles === 'object' ? d.miles : {}, fin:{best:+f.best || 0, passed:!!f.passed}};
+  if (+f.tries) o.fin.tries = +f.tries;
+  if (+f.at) o.fin.at = +f.at;
+  if (+d.at) o.at = +d.at;
+  return o;
 }
+function most(a, b){ return Math.max(+a || 0, +b || 0); }
 /* progress only ever grows, so two copies combine by taking the most from each */
 function mergeMem(a, b){
   a = norm(a); b = norm(b);
   var o = {xp:Math.max(a.xp, b.xp), miles:{}, fin:{best:Math.max(a.fin.best, b.fin.best), passed:a.fin.passed || b.fin.passed}}, ids = {};
+  if (most(a.fin.tries, b.fin.tries)) o.fin.tries = most(a.fin.tries, b.fin.tries);
+  if (most(a.fin.at, b.fin.at)) o.fin.at = most(a.fin.at, b.fin.at);
+  if (most(a.at, b.at)) o.at = most(a.at, b.at);
   Object.keys(a.miles).concat(Object.keys(b.miles)).forEach(function(k){ ids[k] = 1; });
   Object.keys(ids).forEach(function(id){
     var x = a.miles[id] || {}, y = b.miles[id] || {}, xs = x.steps || {}, ys = y.steps || {}, st = {};
     Object.keys(xs).concat(Object.keys(ys)).forEach(function(k){ if (xs[k] || ys[k]) st[k] = true; });
-    o.miles[id] = {steps:st, best:Math.max(+x.best || 0, +y.best || 0), passed:!!(x.passed || y.passed)};
+    var r = o.miles[id] = {steps:st, best:most(x.best, y.best), passed:!!(x.passed || y.passed)};
+    if (most(x.tries, y.tries)) r.tries = most(x.tries, y.tries);
+    if (most(x.at, y.at)) r.at = most(x.at, y.at);
+    if (x.first != null || y.first != null) r.first = x.first == null ? +y.first : y.first == null ? +x.first : Math.min(+x.first, +y.first);
+    var xm = x.miss || {}, ym = y.miss || {}, miss = {}, any = false;
+    Object.keys(xm).concat(Object.keys(ym)).forEach(function(k){ var c = most(xm[k], ym[k]); if (c) { miss[k] = c; any = true; } });
+    if (any) r.miss = miss;
   });
   return o;
 }
@@ -163,6 +180,7 @@ function refreshFamily(){
     learners = r.data || [];
     if (learner) { var hit = learners.filter(function(l){ return l.id === learner.id; })[0]; if (hit) learner = hit; }
     if (!views.family.hidden) renderFamily();
+    if (!views.report.hidden) renderReport();
   });
 }
 function onAuth(ev, s2){
@@ -262,6 +280,118 @@ $('#auth-form').addEventListener('submit', function(e){
   });
 });
 
+/* ---------- a parent's view of one learner: what they have done and how well ---------- */
+function ago(t){
+  if (!t) return 'Not recorded yet';
+  var day = function(x){ var d = new Date(x); d.setHours(0, 0, 0, 0); return d.getTime(); }, n = Math.round((day(Date.now()) - day(t)) / 86400000);
+  if (n <= 0) return 'Today';
+  if (n === 1) return 'Yesterday';
+  if (n < 14) return n + ' days ago';
+  try { return new Date(t).toLocaleDateString([], {month:'short', day:'numeric'}); } catch (e) { return n + ' days ago'; }
+}
+var STATE = {passed:'Passed', retry:'Quiz not passed yet', ready:'Ready for the quiz', started:'In progress', none:'Not started'};
+function reportOf(d){
+  d = norm(d);
+  var R = {xp:d.xp, at:+d.at || 0, fin:d.fin, lessons:0, lessonsAll:0, passed:0, taken:0, pct:0, started:0, retry:[], missed:[], old:false};
+  R.rows = MO.miles.map(function(m){
+    var r = d.miles[m.id] || {}, done = 0, best = +r.best || 0, n = m.quiz.length, tries = +r.tries || 0;
+    m.steps.forEach(function(_, i){ if (r.steps && r.steps[i]) done++; });
+    var took = best > 0 || tries > 0;
+    var row = {m:m, done:done, all:m.steps.length, best:best, n:n, passed:!!r.passed, tries:tries, first:r.first, at:+r.at || 0,
+      state:r.passed ? 'passed' : took ? 'retry' : done === m.steps.length ? 'ready' : done ? 'started' : 'none'};
+    R.lessons += done; R.lessonsAll += row.all;
+    if (row.passed) R.passed++;
+    if (done || took) R.started++;
+    if (took) { R.taken++; R.pct += best / n; if (!tries) R.old = true; }
+    if (row.state === 'retry') R.retry.push(row);
+    if (row.at > R.at) R.at = row.at;
+    Object.keys(r.miss || {}).forEach(function(k){ var q = m.quiz[k], c = +r.miss[k] || 0; if (q && c) R.missed.push({m:m, q:q, n:c}); });
+    return row;
+  });
+  if (+d.fin.at > R.at) R.at = +d.fin.at;
+  R.avg = R.taken ? Math.round(R.pct / R.taken * 100) : null;
+  R.missed.sort(function(a, b){ return b.n - a.n || a.m.n - b.m.n; });
+  return R;
+}
+var reportId = null;
+function dataOf(l){ return l.id === store.id ? mem : l.data; }
+function renderReport(){
+  var l = learners.filter(function(x){ return x.id === reportId; })[0];
+  if (!l) return go('family');
+  var R = reportOf(dataOf(l)), name = l.name;
+  $('#rp-title').textContent = name + '\'s progress';
+  $('#rp-sum').textContent = !R.started && !R.fin.best
+    ? name + ' has not started yet. Once they work through a lesson or take a quiz, it shows up here.'
+    : name + ' has finished ' + R.lessons + ' of ' + R.lessonsAll + ' lesson steps and passed ' + R.passed + ' of ' + MO.miles.length + ' mile quizzes.' +
+      (R.avg === null ? ' No quiz taken yet.' : ' Average best quiz score: ' + R.avg + '%. A pass is 80%.');
+  var tiles = $('#rp-stats'); tiles.textContent = '';
+  [[R.passed + '/' + MO.miles.length, 'Miles passed'], [R.avg === null ? 'None yet' : R.avg + '%', 'Average quiz score'],
+   [R.fin.passed ? 'Passed' : R.fin.best ? R.fin.best + '/' + FINAL_N : 'Not taken', 'Final challenge'], [ago(R.at), 'Last active']].forEach(function(t){
+    var d = h('div', 'tile'); d.appendChild(h('b', null, t[0])); d.appendChild(h('span', null, t[1])); tiles.appendChild(d);
+  });
+
+  var focus = $('#rp-focus'); focus.textContent = '';
+  focus.appendChild(h('h3', 'rp-h', 'Worth going over together'));
+  if (!R.retry.length && !R.missed.length) {
+    focus.appendChild(h('p', 'lede', R.taken ? 'Nothing stands out. ' + name + ' has passed every quiz taken so far' + (R.old ? '.' : ' without missing a question.') : 'Nothing yet. When ' + name + ' takes a quiz, the questions they miss are listed here so you can talk them through.'));
+  }
+  if (R.retry.length) {
+    var p = h('p', null); p.appendChild(h('b', null, 'Quiz not passed yet: '));
+    p.appendChild(document.createTextNode(R.retry.map(function(r){ return 'Mile ' + r.m.n + ', ' + r.m.title + ' (best ' + r.best + ' of ' + r.n + ')'; }).join('; ') + '.'));
+    focus.appendChild(p);
+  }
+  if (R.missed.length) {
+    focus.appendChild(h('p', 'fine', 'Questions missed most on a first pass. The right answer is shown so you can ask ' + name + ' about it.'));
+    var ul = h('ul', 'rp-missed');
+    R.missed.slice(0, 6).forEach(function(x){
+      var li = h('li');
+      li.appendChild(h('span', 'rp-meta', 'Mile ' + x.m.n + ' · ' + x.m.title + ' · missed ' + x.n + (x.n === 1 ? ' time' : ' times')));
+      li.appendChild(h('b', null, x.q.q));
+      li.appendChild(h('span', 'rp-ans', 'Answer: ' + x.q.o[x.q.a]));
+      ul.appendChild(li);
+    });
+    focus.appendChild(ul);
+    if (R.missed.length > 6) focus.appendChild(h('p', 'fine', 'Plus ' + (R.missed.length - 6) + ' more missed once or twice.'));
+  }
+
+  var list = $('#rp-list'); list.textContent = '';
+  R.rows.forEach(function(r){
+    var li = h('li', 'rp-row ' + r.state), n = h('span', 'rp-n', String(r.m.n)), main = h('div', 'rp-main');
+    n.setAttribute('aria-hidden', 'true');
+    main.appendChild(h('b', null, r.m.title));
+    var bits = ['Lessons ' + r.done + ' of ' + r.all];
+    if (r.best > 0 || r.tries) {
+      bits.push('Quiz best ' + r.best + ' of ' + r.n);
+      if (r.first != null && r.tries > 1) bits.push('first try ' + r.first);
+      if (r.tries) bits.push(r.tries + (r.tries === 1 ? ' try' : ' tries'));
+    } else bits.push('Quiz not taken');
+    if (r.at) bits.push(ago(r.at).toLowerCase());
+    main.appendChild(h('span', 'rp-meta', bits.join(' · ')));
+    var bar = h('i', 'rp-bar'), fill = h('i'); fill.style.width = Math.round(r.done / r.all * 100) + '%'; bar.appendChild(fill); main.appendChild(bar);
+    li.appendChild(n); li.appendChild(main); li.appendChild(h('span', 'rp-pill', STATE[r.state]));
+    li.setAttribute('aria-label', 'Mile ' + r.m.n + ', ' + r.m.title + ': ' + STATE[r.state] + '. ' + bits.join(', '));
+    list.appendChild(li);
+  });
+  var f = R.fin, fl = h('li', 'rp-row ' + (f.passed ? 'passed' : f.best ? 'retry' : 'none')), fm = h('div', 'rp-main'), fb = [];
+  fm.appendChild(h('b', null, 'Road Rules Challenge'));
+  fb.push(f.best ? 'Best ' + f.best + ' of ' + FINAL_N + ' (20 to pass)' : FINAL_N + ' questions from every mile, 20 to pass');
+  if (f.tries) fb.push(f.tries + (f.tries === 1 ? ' try' : ' tries'));
+  if (f.at) fb.push(ago(f.at).toLowerCase());
+  fm.appendChild(h('span', 'rp-meta', fb.join(' · ')));
+  var star = h('span', 'rp-n fin', '\u2605'); star.setAttribute('aria-hidden', 'true');
+  fl.appendChild(star); fl.appendChild(fm); fl.appendChild(h('span', 'rp-pill', f.passed ? 'Passed' : f.best ? 'Not passed yet' : 'Not taken'));
+  list.appendChild(fl);
+
+  var note = $('#rp-note');
+  note.hidden = !R.old;
+  note.textContent = 'Quizzes taken before this report was added show a best score only. Their try counts and missed questions start with the next attempt.';
+  var acts = $('#rp-acts'); acts.textContent = '';
+  var open = h('button', 'btn sm', 'Continue as ' + name); open.type = 'button';
+  open.addEventListener('click', function(){ useLearner(l); go('home'); });
+  var back = h('a', 'btn ghost sm', 'All learners'); back.href = '#family';
+  acts.appendChild(open); acts.appendChild(back);
+}
+
 /* ---------- Who's driving? ---------- */
 function statsOf(d){
   d = norm(d);
@@ -270,14 +400,16 @@ function statsOf(d){
     if (r.passed) passed++;
     return r.passed ? 'passed' : started ? 'started' : '';
   });
-  return {xp:d.xp, passed:passed, cells:cells, fin:d.fin};
+  var at = Math.max(+d.at || 0, +d.fin.at || 0);
+  MO.miles.forEach(function(m){ var r = d.miles[m.id]; if (r && +r.at > at) at = +r.at; });
+  return {xp:d.xp, passed:passed, cells:cells, fin:d.fin, at:at};
 }
 function renderFamily(){
   var box = $('#learners');
   box.textContent = '';
   msg($('#fam-msg'), famError || '', 'bad');
   $('#acct-email').textContent = session && session.user ? 'Signed in as ' + session.user.email : '';
-  $('#fam-lede').textContent = learners.length ? 'Pick a profile to continue. Each learner\'s progress is saved separately, and you can see everyone\'s here.' : 'Add your first learner below to get started.';
+  $('#fam-lede').textContent = learners.length ? 'Tap View progress to see what a learner has done and how well they are doing. Tap Continue to open the lessons as that learner.' : 'Add your first learner below to get started.';
   $('#add-form').hidden = learners.length >= 8;
   learners.forEach(function(l){
     var st = statsOf(l.id === store.id ? mem : l.data), card = h('div', 'lcard');
@@ -287,10 +419,12 @@ function renderFamily(){
     st.cells.forEach(function(c){ grid.appendChild(h('i', c)); });
     grid.appendChild(h('i', st.fin.passed ? 'passed fin' : st.fin.best ? 'started fin' : 'fin'));
     card.appendChild(grid);
-    card.appendChild(h('p', 'fine', st.passed + ' of ' + MO.miles.length + ' miles passed. Final challenge best: ' + st.fin.best + ' of ' + FINAL_N + '.'));
+    card.appendChild(h('p', 'fine', st.passed + ' of ' + MO.miles.length + ' miles passed. Final challenge best: ' + st.fin.best + ' of ' + FINAL_N + '.' + (st.at ? ' Last active: ' + ago(st.at).toLowerCase() + '.' : '')));
     var acts = h('div', 'acts');
-    var open = h('button', 'btn sm', 'Continue as ' + l.name); open.type = 'button';
+    var view = h('a', 'btn sm', 'View progress'); view.href = '#report-' + l.id;
+    var open = h('button', 'btn ghost sm', 'Continue as ' + l.name); open.type = 'button';
     open.addEventListener('click', function(){ useLearner(l); go('home'); });
+    acts.appendChild(view);
     var getc = h('button', 'linkbtn', 'Get code'); getc.type = 'button'; getc.title = 'Link ' + l.name + '\'s own phone';
     var ren = h('button', 'linkbtn', 'Rename'); ren.type = 'button';
     var rem = h('button', 'linkbtn', 'Remove'); rem.type = 'button';
@@ -411,13 +545,19 @@ function restT(sc){ return sc.thumb != null ? sc.thumb : sc.freeze != null ? sc.
 /* ============================================================
    HOME
    ============================================================ */
-var views = {auth:$('#view-auth'), family:$('#view-family'), home:$('#view-home'), lesson:$('#view-lesson'), quiz:$('#view-quiz')};
+var views = {auth:$('#view-auth'), family:$('#view-family'), report:$('#view-report'), home:$('#view-home'), lesson:$('#view-lesson'), quiz:$('#view-quiz')};
 function renderNotices(){
   var device = store.id ? readLocal(PACK.storage) : null, claim = $('#claim');
   var offer = !!(device && hasProgress(device) && lsGet('mileone.claimskip.' + store.id) !== '1');
   claim.hidden = !offer;
   if (offer) $('#claim-text').textContent = 'This device has progress saved from before ' + (session ? 'you signed in' : 'it was linked') + ' (' + device.xp + ' XP). Add it to ' + learner.name + '\'s profile?';
   $('#guestnote').hidden = !!session || !guest || !!link;
+  var par = !!(session && learner);
+  $('#parentnote').hidden = !par;
+  if (par) {
+    $('#parent-text').textContent = 'You are signed in to the family account and viewing ' + learner.name + '\'s lessons. Anything done here counts as ' + learner.name + '\'s progress.';
+    $('#parent-report').textContent = learner.name + '\'s progress'; $('#parent-report').href = '#report-' + learner.id;
+  }
   var ln = !session && !!link;
   $('#linknote').hidden = !ln; $('#link-slot').hidden = true; $('#link-slot').textContent = '';
   if (ln) $('#link-text').textContent = 'This device is linked to ' + link.name + '\'s profile. Progress saves to the family account.';
@@ -511,8 +651,8 @@ function drawDots(){
   });
 }
 function markDone(i, xp){
-  var st = M(cur.mile.id).steps;
-  if (!st[i]) { st[i] = true; addXp(xp); return true; }
+  var rec = M(cur.mile.id), st = rec.steps;
+  if (!st[i]) { st[i] = true; rec.at = mem.at = Date.now(); addXp(xp); return true; }
   return false;
 }
 function countText(tail){ return 'Step ' + (cur.i + 1) + ' of ' + cur.mile.steps.length + ': ' + tail; }
@@ -655,13 +795,13 @@ function openLesson(m){
 /* ============================================================
    QUIZ (one mile, or the final challenge)
    ============================================================ */
-var Q = null, queue = [], qpos = 0, retry = [], score = 0, mainRun = true;
+var Q = null, queue = [], qpos = 0, retry = [], score = 0, mainRun = true, missed = [];
 function shuffle(a){ for (var i = a.length - 1; i > 0; i--) { var j = Math.floor(Math.random() * (i + 1)), t = a[i]; a[i] = a[j]; a[j] = t; } return a; }
 function startQuiz(cfg){
   Q = cfg;
   $('#q-eyebrow').textContent = cfg.eyebrow; $('#q-title').textContent = cfg.title;
   queue = cfg.items.map(function(_, i){ return i; });
-  qpos = 0; retry = []; score = 0; mainRun = true;
+  qpos = 0; retry = []; score = 0; mainRun = true; missed = [];
   $('#qbody').hidden = false; $('#result').hidden = true;
   showQ();
 }
@@ -696,6 +836,7 @@ function answer(ci){
   bump(right);
   if (right && mainRun) score++;
   if (!right) retry.push(qi);
+  if (!right && mainRun) missed.push(qi);
   var fb = $('#qfb');
   fb.className = 'fb ' + (right ? 'good' : 'bad');
   fb.textContent = (right ? 'Right. ' : 'Not quite. ') + q.why;
@@ -716,6 +857,13 @@ $('#r-retry').addEventListener('click', function(){ route(); });
 function showResult(){
   var n = Q.items.length, need = passN(n), pass = score >= need, rec = Q.rec();
   var gained = Math.max(0, score - rec.best) * Q.per + (pass && !rec.passed ? Q.bonus : 0);
+  if (!rec.tries && !rec.best && rec.first == null && Q.track) rec.first = score;   /* only a true first attempt */
+  rec.tries = (+rec.tries || 0) + 1;
+  rec.at = mem.at = Date.now();
+  if (Q.track && missed.length) {
+    rec.miss = rec.miss || {};
+    missed.forEach(function(qi){ rec.miss[qi] = (+rec.miss[qi] || 0) + 1; });
+  }
   if (score > rec.best) rec.best = score;
   if (pass) rec.passed = true;
   save(); addXp(gained);
@@ -744,7 +892,7 @@ function showResult(){
   }
 }
 function mileQuiz(m){
-  startQuiz({items:m.quiz, eyebrow:'Mile ' + m.n + ' quiz', title:m.title, badge:m.badge, rec:function(){ return M(m.id); }, per:15, bonus:50, passTitle:'You passed this mile'});
+  startQuiz({items:m.quiz, eyebrow:'Mile ' + m.n + ' quiz', title:m.title, badge:m.badge, rec:function(){ return M(m.id); }, track:true, per:15, bonus:50, passTitle:'You passed this mile'});
 }
 function finalQuiz(){
   var pool = [];
@@ -753,13 +901,13 @@ function finalQuiz(){
 }
 
 /* ============================================================
-   ROUTING: #welcome, #family, #home, #mile-6, #quiz-6, #final
+   ROUTING: #welcome, #family, #report-<learner id>, #home, #mile-6, #quiz-6, #final
    ============================================================ */
 function show(v){ for (var k in views) views[k].hidden = k !== v; $('#boot').hidden = true; }
 function go(hash){ if (location.hash === '#' + hash) route(); else location.hash = hash; }
 function route(){
   if (!booted) return;
-  var hash = (location.hash || '#home').slice(1), m;
+  var hash = (location.hash || (session ? '#family' : '#home')).slice(1), m;   /* a parent opening the site lands on the family page */
   runId++;
   if (stage) { stage.cancel(); stage = null; }
   window.scrollTo(0, 0);
@@ -774,6 +922,12 @@ function route(){
     show('auth'); renderAuth(); return;
   }
   if (!session && !guest && !link) return go('welcome');
+  if (hash.indexOf('report-') === 0) {
+    if (!session) return go(link || guest ? 'home' : 'welcome');
+    reportId = hash.slice(7);
+    $('#learners').textContent = '';
+    show('report'); renderReport(); refreshFamily(); return;
+  }
   if (session && (hash === 'family' || !learner)) {
     if (hash !== 'family') return go('family');
     show('family'); renderFamily(); refreshFamily(); return;
@@ -787,7 +941,7 @@ function route(){
 window.addEventListener('hashchange', route);
 document.addEventListener('visibilitychange', function(){
   var back = document.visibilityState !== 'hidden';
-  if (back && session && !views.family.hidden) refreshFamily();
+  if (back && session && (!views.family.hidden || !views.report.hidden)) refreshFamily();
   if (!store.id) return;
   if (!back) pushNow(store.id);        /* save before the tab goes away */
   else pushNow(store.id).then(function(){ if (!views.home.hidden) renderHome(); });   /* pick up progress from another device */

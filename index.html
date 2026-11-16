@@ -198,6 +198,36 @@ input[type=email]:focus-visible,input[type=password]:focus-visible,input[type=te
 .notice.quiet{background:var(--card);border:1px solid var(--line);margin-top:22px}
 .notice.quiet p{color:var(--muted);font-size:14px}
 .notice .confirm{flex:1 1 100%}
+.notice.top{margin-top:16px}
+.stats.four{grid-template-columns:repeat(4,minmax(0,1fr));max-width:760px}
+.stats.four .tile b{font-size:22px}
+.rp-h{font-size:20px;font-weight:900;margin:26px 0 8px}
+#view-report .lede{max-width:64ch}
+#rp-focus{max-width:760px}
+#rp-focus p{margin:6px 0}
+.rp-missed{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:8px}
+.rp-missed li{background:var(--card);border:1px solid var(--line);border-left:5px solid var(--caution);border-radius:10px;padding:10px 12px;display:grid;gap:3px}
+.rp-missed b{font-weight:700;line-height:1.3}
+.rp-ans{font-size:15px;color:var(--guide-deep);font-weight:700}
+.rp-meta{font-size:13px;color:var(--muted)}
+.rp-list{list-style:none;margin:0;padding:0;display:grid;gap:8px;max-width:760px}
+.rp-row{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px;display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px 12px;align-items:center}
+.rp-n{width:34px;height:34px;border-radius:6px;background:#727B82;color:#fff;display:grid;place-items:center;font-family:var(--font-display);font-weight:900;font-size:17px;padding-top:2px;font-variant-numeric:tabular-nums}
+.rp-row.passed .rp-n{background:var(--guide)}
+.rp-n.fin{background:var(--caution);color:var(--ink);border-radius:50%}
+.rp-main{display:grid;gap:3px;min-width:0}
+.rp-main b{font-family:var(--font-display);font-weight:800;font-size:17px;line-height:1.2}
+.rp-bar{display:block;height:5px;border-radius:3px;background:var(--line);overflow:hidden;margin-top:3px}
+.rp-bar i{display:block;height:100%;background:var(--guide);border-radius:3px}
+.rp-pill{font-size:12px;font-weight:700;padding:4px 9px;border-radius:999px;background:var(--paper);color:var(--muted);border:1px solid var(--line);white-space:nowrap}
+.rp-row.passed .rp-pill{background:#E3F2EC;color:var(--guide-deep);border-color:#B9DCCD}
+.rp-row.retry .rp-pill{background:#FFF8DC;color:#6B5200;border-color:var(--caution)}
+.rp-row.ready .rp-pill,.rp-row.started .rp-pill{color:var(--ink)}
+@media (max-width:560px){
+  .stats.four{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .rp-row{grid-template-columns:auto minmax(0,1fr)}
+  .rp-pill{grid-column:2;justify-self:start}
+}
 
 footer{max-width:1040px;margin:0 auto;padding:0 16px 32px;color:var(--muted);font-size:13px}
 footer p{max-width:70ch}
@@ -276,11 +306,29 @@ footer p{max-width:70ch}
     <div class="acct"><span id="acct-email"></span><button class="btn ghost sm" id="signout" type="button">Sign out</button></div>
   </section>
 
+  <section id="view-report" hidden>
+    <div class="lhead">
+      <a class="back" href="#family">&lsaquo; Family</a>
+      <div class="ltitle"><p class="eyebrow">Progress report</p><h2 id="rp-title"></h2></div>
+    </div>
+    <p class="lede" id="rp-sum"></p>
+    <div class="stats four" id="rp-stats"></div>
+    <div id="rp-focus"></div>
+    <h3 class="rp-h">Mile by mile</h3>
+    <ol class="rp-list" id="rp-list"></ol>
+    <p class="fine" id="rp-note" style="margin-top:12px;max-width:64ch" hidden></p>
+    <div class="acts" id="rp-acts" style="margin-top:20px"></div>
+  </section>
+
   <section id="view-home" hidden>
     <div class="intro">
       <p class="eyebrow">Arizona driver course</p>
       <h1>Learn the road by watching it</h1>
       <p class="lede">Fourteen short lessons, called miles. Each one shows you a rule in pictures first, then lets you make the call. Pass a mile's quiz to earn its badge, then take on the final challenge.</p>
+    </div>
+    <div class="notice quiet top" id="parentnote" hidden>
+      <p id="parent-text"></p>
+      <div class="acts"><a class="btn sm" id="parent-report" href="#family">Progress</a><a class="btn ghost sm" href="#family">All learners</a></div>
     </div>
     <div class="notice" id="claim" hidden>
       <p id="claim-text"></p>
